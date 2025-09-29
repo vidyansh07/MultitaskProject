@@ -1,0 +1,864 @@
+# 🚀 Multitask Platform - Serverless Framework Configuration
+# This file defines the complete AWS infrastructure for our platform
+
+service: multitask-platform
+frameworkVersion: '3'
+
+# Custom variables for configuration
+custom:
+  # Stage-specific settings
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  
+  # Domain configuration
+  domains:
+    dev: api-dev.multitask.com
+    staging: api-staging.multitask.com
+    prod: api.multitask.com
+    
+  # Database table names with stage prefix
+  tables:
+    authSessions: auth-sessions-${self:custom.stage}
+    authAnonymous: auth-anonymous-${self:custom.stage}
+    profiles: profile-profiles-${self:custom.stage}
+    profileAliases: profile-aliases-${self:custom.stage}
+    chatMessages: chat-messages-${self:custom.stage}
+    chatRooms: chat-rooms-${self:custom.stage}
+    posts: post-posts-${self:custom.stage}
+    comments: post-comments-${self:custom.stage}
+    
+  # S3 bucket names
+  buckets:
+    avatars: multitask-avatars-${self:custom.stage}
+    attachments: multitask-attachments-${self:custom.stage}
+    frontend: multitask-frontend-${self:custom.stage}
+    
+  # Environment-specific scaling
+  scaling:
+    dev:
+      lambda:
+        reservedConcurrency: 5
+        provisionedConcurrency: 0
+      dynamodb:
+        billingMode: PAY_PER_REQUEST
+    staging:
+      lambda:
+        reservedConcurrency: 20
+        provisionedConcurrency: 2
+      dynamodb:
+        billingMode: PAY_PER_REQUEST
+    prod:
+      lambda:
+        reservedConcurrency: 100
+        provisionedConcurrency: 10
+      dynamodb:
+        billingMode: PAY_PER_REQUEST
+        
+  # CORS settings
+  corsSettings:
+    origin: 
+      dev: "*"
+      staging: "https://staging.multitask.com"
+      prod: "https://multitask.com,https://www.multitask.com"
+      
+  # EventBridge configuration
+  eventBridge:
+    eventBusName: multitask-events-${self:custom.stage}
+
+# Serverless plugins for additional functionality
+plugins:
+  - serverless-webpack
+  - serverless-offline
+  - serverless-domain-manager
+  - serverless-prune-plugin
+  - serverless-plugin-warmup
+
+# AWS Provider configuration
+provider:
+  name: aws
+  runtime: go1.x
+  architecture: x86_64
+  region: ${self:custom.region}
+  stage: ${self:custom.stage}
+  memorySize: 512
+  timeout: 30
+  
+  # Environment variables available to all functions
+  environment:
+    STAGE: ${self:custom.stage}
+    REGION: ${self:custom.region}
+    
+    # Database table names
+    DYNAMODB_TABLE_AUTH_SESSIONS: ${self:custom.tables.authSessions}
+    DYNAMODB_TABLE_AUTH_ANONYMOUS: ${self:custom.tables.authAnonymous}
+    DYNAMODB_TABLE_PROFILES: ${self:custom.tables.profiles}
+    DYNAMODB_TABLE_PROFILE_ALIASES: ${self:custom.tables.profileAliases}
+    DYNAMODB_TABLE_CHAT_MESSAGES: ${self:custom.tables.chatMessages}
+    DYNAMODB_TABLE_CHAT_ROOMS: ${self:custom.tables.chatRooms}
+    DYNAMODB_TABLE_POSTS: ${self:custom.tables.posts}
+    DYNAMODB_TABLE_COMMENTS: ${self:custom.tables.comments}
+    
+    # S3 bucket names
+    S3_BUCKET_AVATARS: ${self:custom.buckets.avatars}
+    S3_BUCKET_ATTACHMENTS: ${self:custom.buckets.attachments}
+    S3_BUCKET_FRONTEND: ${self:custom.buckets.frontend}
+    
+    # External services
+    COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+    COGNITO_CLIENT_ID: !Ref CognitoUserPoolClient
+    EVENTBRIDGE_BUS_NAME: ${self:custom.eventBridge.eventBusName}
+    
+    # CORS settings
+    CORS_ORIGIN: ${self:custom.corsSettings.origin.${self:custom.stage}}
+    
+    # Secrets (will be loaded from SSM)
+    JWT_SECRET: ${ssm:/multitask/${self:custom.stage}/jwt-secret~true}
+    GEMINI_API_KEY: ${ssm:/multitask/${self:custom.stage}/gemini-api-key~true}
+    OPENAI_API_KEY: ${ssm:/multitask/${self:custom.stage}/openai-api-key~true}
+    
+  # Global IAM permissions for all Lambda functions
+  iam:
+    role:
+      statements:
+        # DynamoDB permissions
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+            - dynamodb:BatchGetItem
+            - dynamodb:BatchWriteItem
+          Resource:
+            - !GetAtt AuthSessionsTable.Arn
+            - !GetAtt AuthAnonymousTable.Arn
+            - !GetAtt ProfilesTable.Arn
+            - !GetAtt ProfileAliasesTable.Arn
+            - !GetAtt ChatMessagesTable.Arn
+            - !GetAtt ChatRoomsTable.Arn
+            - !GetAtt PostsTable.Arn
+            - !GetAtt CommentsTable.Arn
+            - !Sub "${AuthSessionsTable.Arn}/index/*"
+            - !Sub "${ProfileAliasesTable.Arn}/index/*"
+            - !Sub "${ChatMessagesTable.Arn}/index/*"
+            - !Sub "${ChatRoomsTable.Arn}/index/*"
+            - !Sub "${PostsTable.Arn}/index/*"
+            - !Sub "${CommentsTable.Arn}/index/*"
+            
+        # S3 permissions
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - s3:PutObjectAcl
+          Resource:
+            - !Sub "${AvatarsBucket}/*"
+            - !Sub "${AttachmentsBucket}/*"
+            
+        # Cognito permissions
+        - Effect: Allow
+          Action:
+            - cognito-idp:AdminGetUser
+            - cognito-idp:AdminCreateUser
+            - cognito-idp:AdminUpdateUserAttributes
+            - cognito-idp:AdminDeleteUser
+            - cognito-idp:ListUsers
+          Resource:
+            - !GetAtt CognitoUserPool.Arn
+            
+        # EventBridge permissions
+        - Effect: Allow
+          Action:
+            - events:PutEvents
+          Resource:
+            - !GetAtt EventBridge.Arn
+            
+        # CloudWatch Logs permissions
+        - Effect: Allow
+          Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+          Resource: "*"
+          
+        # SSM Parameter Store permissions
+        - Effect: Allow
+          Action:
+            - ssm:GetParameter
+            - ssm:GetParameters
+            - ssm:GetParametersByPath
+          Resource:
+            - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/multitask/${self:custom.stage}/*"
+
+# Lambda function definitions
+functions:
+  # 🔐 Authentication Service
+  auth:
+    handler: bin/auth
+    package:
+      include:
+        - bin/auth
+    reservedConcurrency: ${self:custom.scaling.${self:custom.stage}.lambda.reservedConcurrency}
+    provisionedConcurrency: ${self:custom.scaling.${self:custom.stage}.lambda.provisionedConcurrency}
+    events:
+      - http:
+          path: /v1/auth/{proxy+}
+          method: ANY
+          cors:
+            origin: ${self:custom.corsSettings.origin.${self:custom.stage}}
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Correlation-ID
+            allowCredentials: true
+    environment:
+      SERVICE_NAME: auth-svc
+      LOG_LEVEL: ${self:custom.stage == 'prod' && 'info' || 'debug'}
+      
+  # 👤 Profile Service  
+  profile:
+    handler: bin/profile
+    package:
+      include:
+        - bin/profile
+    reservedConcurrency: ${self:custom.scaling.${self:custom.stage}.lambda.reservedConcurrency}
+    events:
+      - http:
+          path: /v1/profile/{proxy+}
+          method: ANY
+          cors:
+            origin: ${self:custom.corsSettings.origin.${self:custom.stage}}
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Correlation-ID
+            allowCredentials: true
+    environment:
+      SERVICE_NAME: profile-svc
+      LOG_LEVEL: ${self:custom.stage == 'prod' && 'info' || 'debug'}
+      CLOUDFRONT_DOMAIN: !GetAtt AvatarsCloudFront.DomainName
+      
+  # 💬 Chat Service
+  chat:
+    handler: bin/chat
+    package:
+      include:
+        - bin/chat
+    reservedConcurrency: ${self:custom.scaling.${self:custom.stage}.lambda.reservedConcurrency}
+    timeout: 30
+    events:
+      - http:
+          path: /v1/chat/{proxy+}
+          method: ANY
+          cors:
+            origin: ${self:custom.corsSettings.origin.${self:custom.stage}}
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Correlation-ID
+            allowCredentials: true
+      # WebSocket API events
+      - websocket:
+          route: $connect
+      - websocket:
+          route: $disconnect
+      - websocket:
+          route: join_room
+      - websocket:
+          route: leave_room
+      - websocket:
+          route: send_message
+      - websocket:
+          route: typing_start
+      - websocket:
+          route: typing_stop
+    environment:
+      SERVICE_NAME: chat-svc
+      LOG_LEVEL: ${self:custom.stage == 'prod' && 'info' || 'debug'}
+      WEBSOCKET_API_ENDPOINT: !Sub "${WebsocketsApi}.execute-api.${AWS::Region}.amazonaws.com/${self:custom.stage}"
+      
+  # 📝 Post Service
+  post:
+    handler: bin/post
+    package:
+      include:
+        - bin/post
+    reservedConcurrency: ${self:custom.scaling.${self:custom.stage}.lambda.reservedConcurrency}
+    events:
+      - http:
+          path: /v1/posts/{proxy+}
+          method: ANY
+          cors:
+            origin: ${self:custom.corsSettings.origin.${self:custom.stage}}
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Correlation-ID
+            allowCredentials: true
+    environment:
+      SERVICE_NAME: post-svc
+      LOG_LEVEL: ${self:custom.stage == 'prod' && 'info' || 'debug'}
+      
+  # 🛒 Catalog Service (Marketplace)
+  catalog:
+    handler: bin/catalog
+    package:
+      include:
+        - bin/catalog
+    reservedConcurrency: ${self:custom.scaling.${self:custom.stage}.lambda.reservedConcurrency}
+    events:
+      - http:
+          path: /v1/catalog/{proxy+}
+          method: ANY
+          cors:
+            origin: ${self:custom.corsSettings.origin.${self:custom.stage}}
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Correlation-ID
+            allowCredentials: true
+    environment:
+      SERVICE_NAME: catalog-svc
+      LOG_LEVEL: ${self:custom.stage == 'prod' && 'info' || 'debug'}
+
+  # 🤖 AI Service
+  ai:
+    handler: bin/ai
+    package:
+      include:
+        - bin/ai
+    reservedConcurrency: ${self:custom.scaling.${self:custom.stage}.lambda.reservedConcurrency}
+    timeout: 60  # AI requests may take longer
+    events:
+      - http:
+          path: /v1/ai/{proxy+}
+          method: ANY
+          cors:
+            origin: ${self:custom.corsSettings.origin.${self:custom.stage}}
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+              - X-Correlation-ID
+            allowCredentials: true
+    environment:
+      SERVICE_NAME: ai-svc
+      LOG_LEVEL: ${self:custom.stage == 'prod' && 'info' || 'debug'}
+
+# AWS Resources (CloudFormation)
+resources:
+  Resources:
+    # 🔐 Cognito User Pool for Authentication
+    CognitoUserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: multitask-users-${self:custom.stage}
+        UsernameAttributes:
+          - email
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 8
+            RequireUppercase: true
+            RequireLowercase: true
+            RequireNumbers: true
+            RequireSymbols: true
+        Schema:
+          - Name: email
+            AttributeDataType: String
+            Required: true
+            Mutable: false
+          - Name: name
+            AttributeDataType: String
+            Required: true
+            Mutable: true
+          - Name: roles
+            AttributeDataType: String
+            Mutable: true
+        AutoVerifiedAttributes:
+          - email
+        AccountRecoverySetting:
+          RecoveryMechanisms:
+            - Name: verified_email
+              Priority: 1
+        UserPoolTags:
+          Project: multitask-platform
+          Environment: ${self:custom.stage}
+          
+    CognitoUserPoolClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: multitask-client-${self:custom.stage}
+        UserPoolId: !Ref CognitoUserPool
+        GenerateSecret: false
+        ExplicitAuthFlows:
+          - ADMIN_NO_SRP_AUTH
+          - USER_PASSWORD_AUTH
+          - ALLOW_REFRESH_TOKEN_AUTH
+        RefreshTokenValidity: 7
+        AccessTokenValidity: 15
+        IdTokenValidity: 15
+        TokenValidityUnits:
+          RefreshToken: days
+          AccessToken: minutes
+          IdToken: minutes
+
+    # 📊 DynamoDB Tables
+    
+    # Auth service tables
+    AuthSessionsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tables.authSessions}
+        BillingMode: ${self:custom.scaling.${self:custom.stage}.dynamodb.billingMode}
+        AttributeDefinitions:
+          - AttributeName: session_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: session_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: user-id-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+        TimeToLiveSpecification:
+          AttributeName: expires_at
+          Enabled: true
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: ${self:custom.stage == 'prod'}
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+          - Key: Service
+            Value: auth-svc
+            
+    AuthAnonymousTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tables.authAnonymous}
+        BillingMode: ${self:custom.scaling.${self:custom.stage}.dynamodb.billingMode}
+        AttributeDefinitions:
+          - AttributeName: anonymous_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: anonymous_id
+            KeyType: HASH
+        TimeToLiveSpecification:
+          AttributeName: expires_at
+          Enabled: true
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+          - Key: Service
+            Value: auth-svc
+
+    # Profile service tables
+    ProfilesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tables.profiles}
+        BillingMode: ${self:custom.scaling.${self:custom.stage}.dynamodb.billingMode}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: ${self:custom.stage == 'prod'}
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+          - Key: Service
+            Value: profile-svc
+            
+    ProfileAliasesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tables.profileAliases}
+        BillingMode: ${self:custom.scaling.${self:custom.stage}.dynamodb.billingMode}
+        AttributeDefinitions:
+          - AttributeName: alias_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: alias_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: user-id-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+        TimeToLiveSpecification:
+          AttributeName: expires_at
+          Enabled: true
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+          - Key: Service
+            Value: profile-svc
+
+    # Chat service tables
+    ChatMessagesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tables.chatMessages}
+        BillingMode: ${self:custom.scaling.${self:custom.stage}.dynamodb.billingMode}
+        AttributeDefinitions:
+          - AttributeName: message_id
+            AttributeType: S
+          - AttributeName: room_id
+            AttributeType: S
+          - AttributeName: timestamp
+            AttributeType: S
+        KeySchema:
+          - AttributeName: message_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: room-messages-index
+            KeySchema:
+              - AttributeName: room_id
+                KeyType: HASH
+              - AttributeName: timestamp
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+          - Key: Service
+            Value: chat-svc
+            
+    ChatRoomsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tables.chatRooms}
+        BillingMode: ${self:custom.scaling.${self:custom.stage}.dynamodb.billingMode}
+        AttributeDefinitions:
+          - AttributeName: room_id
+            AttributeType: S
+          - AttributeName: type
+            AttributeType: S
+        KeySchema:
+          - AttributeName: room_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: room-type-index
+            KeySchema:
+              - AttributeName: type
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+          - Key: Service
+            Value: chat-svc
+
+    # Post service tables
+    PostsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tables.posts}
+        BillingMode: ${self:custom.scaling.${self:custom.stage}.dynamodb.billingMode}
+        AttributeDefinitions:
+          - AttributeName: post_id
+            AttributeType: S
+          - AttributeName: created_at
+            AttributeType: S
+          - AttributeName: author_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: post_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: timeline-index
+            KeySchema:
+              - AttributeName: created_at
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+          - IndexName: author-posts-index
+            KeySchema:
+              - AttributeName: author_id
+                KeyType: HASH
+              - AttributeName: created_at
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+          - Key: Service
+            Value: post-svc
+            
+    CommentsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tables.comments}
+        BillingMode: ${self:custom.scaling.${self:custom.stage}.dynamodb.billingMode}
+        AttributeDefinitions:
+          - AttributeName: comment_id
+            AttributeType: S
+          - AttributeName: post_id
+            AttributeType: S
+          - AttributeName: created_at
+            AttributeType: S
+        KeySchema:
+          - AttributeName: comment_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: post-comments-index
+            KeySchema:
+              - AttributeName: post_id
+                KeyType: HASH
+              - AttributeName: created_at
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+          - Key: Service
+            Value: post-svc
+
+    # 📁 S3 Buckets
+    AvatarsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.buckets.avatars}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ["*"]
+              AllowedMethods: [PUT, POST, GET]
+              AllowedOrigins: 
+                - ${self:custom.corsSettings.origin.${self:custom.stage}}
+              MaxAge: 3600
+        LifecycleConfiguration:
+          Rules:
+            - Id: DeleteOldAvatars
+              Status: Enabled
+              ExpirationInDays: 365
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+          - Key: Purpose
+            Value: user-avatars
+            
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.buckets.attachments}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ["*"]
+              AllowedMethods: [PUT, POST, GET]
+              AllowedOrigins: 
+                - ${self:custom.corsSettings.origin.${self:custom.stage}}
+              MaxAge: 3600
+        LifecycleConfiguration:
+          Rules:
+            - Id: TransitionToIA
+              Status: Enabled
+              Transition:
+                Days: 30
+                StorageClass: STANDARD_IA
+            - Id: TransitionToGlacier
+              Status: Enabled
+              Transition:
+                Days: 90
+                StorageClass: GLACIER
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+          - Key: Purpose
+            Value: chat-attachments
+            
+    FrontendBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.buckets.frontend}
+        WebsiteConfiguration:
+          IndexDocument: index.html
+          ErrorDocument: error.html
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: false
+          BlockPublicPolicy: false
+          IgnorePublicAcls: false
+          RestrictPublicBuckets: false
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+          - Key: Purpose
+            Value: static-website
+
+    # 🌐 CloudFront Distribution for Avatars
+    AvatarsCloudFront:
+      Type: AWS::CloudFront::Distribution
+      Properties:
+        DistributionConfig:
+          Enabled: true
+          Comment: Avatars CDN for ${self:custom.stage}
+          DefaultCacheBehavior:
+            TargetOriginId: AvatarsS3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad  # Caching Optimized
+            OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf  # CORS-S3Origin
+          Origins:
+            - Id: AvatarsS3Origin
+              DomainName: !GetAtt AvatarsBucket.RegionalDomainName
+              S3OriginConfig:
+                OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${AvatarsOriginAccessIdentity}"
+          PriceClass: PriceClass_100
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+            
+    AvatarsOriginAccessIdentity:
+      Type: AWS::CloudFront::OriginAccessIdentity
+      Properties:
+        OriginAccessIdentityConfig:
+          Comment: OAI for avatars bucket ${self:custom.stage}
+
+    # 📡 EventBridge Custom Bus
+    EventBridge:
+      Type: AWS::Events::EventBus
+      Properties:
+        Name: ${self:custom.eventBridge.eventBusName}
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+
+    # 📢 SNS Topic for Notifications
+    NotificationsTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: multitask-notifications-${self:custom.stage}
+        DisplayName: Multitask Platform Notifications
+        Tags:
+          - Key: Project
+            Value: multitask-platform
+          - Key: Environment
+            Value: ${self:custom.stage}
+
+  # CloudFormation Outputs
+  Outputs:
+    # API Gateway
+    ApiGatewayRestApiId:
+      Value: !Ref ApiGatewayRestApi
+      Export:
+        Name: ${self:service}-${self:custom.stage}-ApiGatewayRestApiId
+        
+    ApiGatewayRestApiUrl:
+      Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${self:custom.stage}"
+      Export:
+        Name: ${self:service}-${self:custom.stage}-ApiGatewayRestApiUrl
+        
+    # WebSocket API
+    WebSocketApiId:
+      Value: !Ref WebsocketsApi
+      Export:
+        Name: ${self:service}-${self:custom.stage}-WebSocketApiId
+        
+    WebSocketApiUrl:
+      Value: !Sub "wss://${WebsocketsApi}.execute-api.${AWS::Region}.amazonaws.com/${self:custom.stage}"
+      Export:
+        Name: ${self:service}-${self:custom.stage}-WebSocketApiUrl
+        
+    # Cognito
+    CognitoUserPoolId:
+      Value: !Ref CognitoUserPool
+      Export:
+        Name: ${self:service}-${self:custom.stage}-CognitoUserPoolId
+        
+    CognitoUserPoolClientId:
+      Value: !Ref CognitoUserPoolClient
+      Export:
+        Name: ${self:service}-${self:custom.stage}-CognitoUserPoolClientId
+        
+    # CloudFront
+    AvatarsCloudFrontDomain:
+      Value: !GetAtt AvatarsCloudFront.DomainName
+      Export:
+        Name: ${self:service}-${self:custom.stage}-AvatarsCloudFrontDomain
+        
+    # EventBridge
+    EventBridgeBusArn:
+      Value: !GetAtt EventBridge.Arn
+      Export:
+        Name: ${self:service}-${self:custom.stage}-EventBridgeBusArn
